@@ -479,6 +479,32 @@ class Header(Base):
         if id != PROPERTY_END:
             raise FormatError('end id expected but %s found' % (repr(id)))
 
+class DecompressorWrapper:
+    def __init__(self, max_length):
+        print("new decompressor with max_length = %d"%(max_length or -42))
+        self.unconsumed = bytes()
+        self.need_properties = True
+        self.max_length = max_length
+
+    def decompress(self, data, bufsize = READ_BLOCKSIZE):
+        LZMA_PROPS_SIZE = 5
+
+        print(self.need_properties, self.unconsumed, len(data))
+        self.unconsumed += data
+        if self.need_properties:
+            if len(self.unconsumed) < LZMA_PROPS_SIZE:
+                return b''
+            self.need_properties = False
+            self.decompressor = lzma.LZMADecompressor()
+
+        if self.unconsumed == b'':
+            # No more bytes to decompress
+            return b''
+
+        next_out = self.decompressor.decompress(self.unconsumed)
+        self.unconsumed = self.decompressor.unused_data
+        return next_out
+
 class ArchiveFile(Base):
     """ wrapper around a file in the archive """
     
