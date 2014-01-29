@@ -750,7 +750,6 @@ class Archive7z(Base):
         obidx = 0
         src_pos = self.afterheader
         pos = 0
-        folder_start = 0
         folder_pos = src_pos
         maxsize = (self.solid and packinfo.packsizes[0]) or None
         for idx in range(files.numfiles):
@@ -780,15 +779,23 @@ class Archive7z(Base):
             else:
                 src_pos += info['compressed']
             obidx += 1
-            if idx >= subinfo.numunpackstreams[fidx]+folder_start:
+            if obidx in self.get_folder_transition_indexes(subinfo.numunpackstreams):
                 folder_pos += packinfo.packsizes[fidx]
                 src_pos = folder_pos
-                folder_start = idx
                 fidx += 1
         
         self.numfiles = len(self.files)
         self.filenames = map(lambda x: x.filename, self.files)
         
+    # Find archive file indexes when folder transitions occur
+    def get_folder_transition_indexes(self, numunpackstreams):
+        accum = 0
+        result = []
+        for x in numunpackstreams:
+            accum += x
+            result.append(accum)
+        return result
+
     # interface like TarFile
         
     def getmember(self, name):
