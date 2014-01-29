@@ -567,7 +567,8 @@ class ArchiveFile(Base):
         cnt = 0
         properties = coder.get('properties', None)
         if properties:
-            decompressor.decompress(properties)
+            decompressor.decompress(properties+pack('<Q',self._folder.getUnpackSize()))
+            print('getUnpackSize = %d', self._folder.getUnpackSize(), self.size)
         total = self.compressed
         if not input and total is None:
             remaining = self._start+self.size
@@ -607,7 +608,7 @@ class ArchiveFile(Base):
         return data[self._start:self._start+self.size]
     
     def _read_lzma(self, coder, input):
-        dec = pylzma.decompressobj(maxlength=self._start+self.size)
+        dec = DecompressorWrapper(None)
         try:
             return self._read_from_decompressor(coder, dec, input, checkremaining=True, with_cache=True)
         except ValueError:
@@ -717,7 +718,7 @@ class Archive7z(Base):
                 props = folder.coders[0]['properties']
                 for idx in range(len(streams.packinfo.packsizes)):
                     tmp = file.read(streams.packinfo.packsizes[idx])
-                    data += pylzma.decompress(props+tmp, maxlength=folder.unpacksizes[idx])
+                    data += lzma.decompress(props+pack('<Q',folder.unpacksizes[idx])+tmp)
                 
                 if folder.digestdefined:
                     if not self.checkcrc(folder.crc, data):
