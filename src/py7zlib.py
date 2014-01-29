@@ -540,6 +540,7 @@ class ArchiveFile(Base):
             raise TypeError("file has no coder informations")
         
         data = None
+        assert len(self._folder.coders) <= 4
         for coder in self._folder.coders:
             method = coder['method']
             decoder = None
