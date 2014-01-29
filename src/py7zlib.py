@@ -27,41 +27,14 @@
 
 from binascii import unhexlify
 from datetime import datetime
-import pylzma
+import lzma
 from struct import pack, unpack
 from zlib import crc32
 import zlib
 import bz2
-try:
-    from io import BytesIO
-except ImportError:
-    from cStringIO import StringIO as BytesIO
-try:
-    from functools import reduce
-except ImportError:
-    # reduce is available in functools starting with Python 2.6
-    pass
-
-try:
-    from pytz import UTC
-except ImportError:
-    # pytz is optional, define own "UTC" timestamp
-    # reference implementation from Python documentation
-    from datetime import timedelta, tzinfo
-
-    ZERO = timedelta(0)
-
-    class UTC(tzinfo):
-        """UTC"""
-
-        def utcoffset(self, dt):
-            return ZERO
-
-        def tzname(self, dt):
-            return "UTC"
-
-        def dst(self, dt):
-            return ZERO    
+from io import BytesIO
+from functools import reduce
+from datetime import timezone
 
 try:
     unicode
@@ -140,7 +113,7 @@ class NoPasswordGivenError(DecryptionError):
 class WrongPasswordError(DecryptionError):
     pass
 
-class ArchiveTimestamp(long):
+class ArchiveTimestamp(int):
     """Windows FILETIME timestamp."""
     
     def __repr__(self):
@@ -148,7 +121,7 @@ class ArchiveTimestamp(long):
     
     def as_datetime(self):
         """Convert FILETIME to Python datetime object."""
-        return datetime.fromtimestamp(toTimestamp(self), UTC)
+        return datetime.fromtimestamp(toTimestamp(self), timezone.utc)
 
 class Base(object):
     """ base class with support for various basic read/write functions """
