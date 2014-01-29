@@ -83,6 +83,14 @@ def gzip_handler(filename):
 		return False
 	return True
 
+def xz_handler(filename):
+	from lzma import LZMAFile
+	try:
+		read_until_end(LZMAFile(filename, 'rb'))
+	except:
+		return False
+	return True
+
 def _7zip_handler(filename):
 	from py7zlib import Archive7z
 	Archive7z(open(filename, 'rb'))
@@ -114,6 +122,7 @@ def get_file_handlers():
 			['.zip', '.odt', '.ods', '.odp', '.odg', '.docx', '.xlsx', '.pptx', '.jar', '.apk', '.cbz', '.epub', '.xpi'],
 		BuiltinHandler(gzip_handler): ['.gz', '.tgz'],
 		BuiltinHandler(bzip2_handler): ['.bz2', '.tbz'],
+		BuiltinHandler(xz_handler): ['.xz', '.txz'],
 		#BuiltinHandler(_7zip_handler): ['.7z'],
 		ExternalHandler('7z', 't', '-bd'): ['.7z'],
 		ExternalHandler("unrar", "t", "-inul"): ['.rar'],
