@@ -1,3 +1,24 @@
+# This turns out not to work and it appears infeasible to leverage
+# leverage Python 3.3+'s lzma module to decode common .7z files,
+# despite the commonality between lzma ("LZMA1") and xz ("LZMA2") formats:
+
+# (1) http://sourceforge.net/p/lzmautils/discussion/708858/thread/7bd9799e/
+#     sees ("BCJ2 filter") 7-Zip's author Igor Pavlov, write that by 2011-11-08,
+#     "BCJ code can't be used to decode BCJ2 streams";
+
+# (2) http://sourceforge.net/p/lzmautils/discussion/708858/thread/da2a47a8/
+#     ("LZMA1+BCJ made by 7-Zip") Lasse Collin observes that even if one mapped
+#     BCJ2 to BCJ somehow, as of 2011-12-06 "there's no way to" reliably handle
+#     even regular BCJ preprocessing via liblzma because "the BCJ decoder won't
+#     give the last bytes before LZMA1 has told the BCJ decoder that the end of
+#     the LZMA1 stream has been reached"; and
+
+# (3) The XZ Utils FAQ flat-out states that "BCJ2 is not included" in
+#     liblzma, which Python relies on for lzma/xz support, while, alas,
+#     BCJ2 LZMA LZMA LZMA and similar profiles commonly appear in .7z.
+
+# Therefore, this code remains indefinitely deprecated.
+
 #!/usr/bin/python -u
 #
 # Python Bindings for LZMA
@@ -26,15 +47,10 @@
 """
 
 from binascii import unhexlify
-from datetime import datetime
 import lzma
 from struct import pack, unpack
 from zlib import crc32
-import zlib
-import bz2
 from io import BytesIO
-from functools import reduce
-from datetime import timezone
 
 try:
     unicode
@@ -77,11 +93,9 @@ PROPERTY_ENCODED_HEADER          = unhexlify('17')  # '\x17'
 
 COMPRESSION_METHOD_COPY          = unhexlify('00')  # '\x00'
 COMPRESSION_METHOD_LZMA          = unhexlify('03')  # '\x03'
-COMPRESSION_METHOD_CRYPTO        = unhexlify('06')  # '\x06'
 COMPRESSION_METHOD_MISC          = unhexlify('04')  # '\x04'
 COMPRESSION_METHOD_MISC_ZIP      = unhexlify('0401')  # '\x04\x01'
 COMPRESSION_METHOD_MISC_BZIP     = unhexlify('0402')  # '\x04\x02'
-COMPRESSION_METHOD_7Z_AES256_SHA256 = unhexlify('06f10701')  # '\x06\xf1\x07\x01'
 
 # number of seconds between 1601/01/01 and 1970/01/01 (UTC)
 # used to adjust 7z FILETIME to Python timestamp
@@ -98,19 +112,7 @@ class ArchiveError(Exception):
 class FormatError(ArchiveError):
     pass
 
-class EncryptedArchiveError(ArchiveError):
-    pass
-
 class UnsupportedCompressionMethodError(ArchiveError):
-    pass
-
-class DecryptionError(ArchiveError):
-    pass
-
-class NoPasswordGivenError(DecryptionError):
-    pass
-
-class WrongPasswordError(DecryptionError):
     pass
 
 class ArchiveTimestamp(int):
@@ -121,7 +123,8 @@ class ArchiveTimestamp(int):
     
     def as_datetime(self):
         """Convert FILETIME to Python datetime object."""
-        return datetime.fromtimestamp(toTimestamp(self), timezone.utc)
+        from datetime import fromtimestamp, timezone
+        return fromtimestamp(toTimestamp(self), timezone.utc)
 
 class Base(object):
     """ base class with support for various basic read/write functions """
@@ -132,6 +135,7 @@ class Base(object):
         return b << 32 | a, res
     
     def _read64Bit(self, file):
+        from functools import reduce
         b = ord(file.read(1))
         mask = 0x80
         for i in range(8):
@@ -320,14 +324,15 @@ class SubstreamsInfo(Base):
                 self.numunpackstreams.append(1)
         
         if id == PROPERTY_SIZE:
-            sum = 0
             self.unpacksizes = []
             for i in range(len(self.numunpackstreams)):
+                sum = 0
                 for j in range(1, self.numunpackstreams[i]):
                     size = self._read64Bit(file)
                     self.unpacksizes.append(size)
                     sum += size
                 self.unpacksizes.append(folders[i].getUnpackSize() - sum)
+                assert folders[i].getUnpackSize() > sum
                 
             id = file.read(1)
 
@@ -481,7 +486,6 @@ class Header(Base):
 
 class DecompressorWrapper:
     def __init__(self, max_length):
-        print("new decompressor with max_length = %d"%(max_length or -42))
         self.unconsumed = bytes()
         self.need_properties = True
         self.max_length = max_length
@@ -489,7 +493,6 @@ class DecompressorWrapper:
     def decompress(self, data, bufsize = READ_BLOCKSIZE):
         LZMA_PROPS_SIZE = 5
 
-        print(self.need_properties, self.unconsumed, len(data))
         self.unconsumed += data
         if self.need_properties:
             if len(self.unconsumed) < LZMA_PROPS_SIZE:
@@ -526,11 +529,7 @@ class ArchiveFile(Base):
             COMPRESSION_METHOD_LZMA: '_read_lzma',
             COMPRESSION_METHOD_MISC_ZIP: '_read_zip',
             COMPRESSION_METHOD_MISC_BZIP: '_read_bzip',
-            COMPRESSION_METHOD_7Z_AES256_SHA256: '_read_7z_aes256_sha256',
         }
-
-    def _is_encrypted(self):
-        return COMPRESSION_METHOD_7Z_AES256_SHA256 in [x['method'] for x in self._folder.coders]
 
     def reset(self):
         self.pos = 0
@@ -540,7 +539,6 @@ class ArchiveFile(Base):
             raise TypeError("file has no coder informations")
         
         data = None
-        assert len(self._folder.coders) <= 4
         for coder in self._folder.coders:
             method = coder['method']
             decoder = None
@@ -612,57 +610,15 @@ class ArchiveFile(Base):
         try:
             return self._read_from_decompressor(coder, dec, input, checkremaining=True, with_cache=True)
         except ValueError:
-            if self._is_encrypted():
-                raise WrongPasswordError('invalid password')
-            
             raise
         
     def _read_zip(self, coder, input):
-        dec = zlib.decompressobj(-15)
-        return self._read_from_decompressor(coder, dec, input, checkremaining=True)
+        from zlib import decompressobj
+        return self._read_from_decompressor(coder, decompressobj(-15), input, checkremaining=True)
         
     def _read_bzip(self, coder, input):
-        dec = bz2.BZ2Decompressor()
-        return self._read_from_decompressor(coder, dec, input)
-    
-    def _read_7z_aes256_sha256(self, coder, input):
-        if not self._archive.password:
-            raise NoPasswordGivenError()
-        
-        # TODO: this needs some sanity checks
-        firstbyte = ord(coder['properties'][0])
-        numcyclespower = firstbyte & 0x3f
-        if firstbyte & 0xc0 != 0:
-            saltsize = (firstbyte >> 7) & 1
-            ivsize = (firstbyte >> 6) & 1
-            
-            secondbyte = ord(coder['properties'][1])
-            saltsize += (secondbyte >> 4)
-            ivsize += (secondbyte & 0x0f)
-            
-            assert len(coder['properties']) == 2+saltsize+ivsize
-            salt = coder['properties'][2:2+saltsize]
-            iv = coder['properties'][2+saltsize:2+saltsize+ivsize]
-            assert len(salt) == saltsize
-            assert len(iv) == ivsize
-            assert numcyclespower <= 24
-            if ivsize < 16:
-                iv += '\x00'*(16-ivsize)
-        else:
-            salt = iv = ''
-        
-        password = self._archive.password.encode('utf-16-le')
-        key = pylzma.calculate_key(password, numcyclespower, salt=salt)
-        cipher = pylzma.AESDecrypt(key, iv=iv)
-        if not input:
-            self._file.seek(self._src_start)
-            uncompressed_size = self.uncompressed
-            if uncompressed_size & 0x0f:
-                # we need a multiple of 16 bytes
-                uncompressed_size += 16 - (uncompressed_size & 0x0f)
-            input = self._file.read(uncompressed_size)
-        result = cipher.decrypt(input)
-        return result
+        from bz2 import BZ2Decompressor
+        return self._read_from_decompressor(coder, BZ2Decompressor(), input)
     
     def checkcrc(self):
         if self.digest is None:
@@ -676,8 +632,10 @@ class ArchiveFile(Base):
 class Archive7z(Base):
     """ the archive itself """
     
-    def __init__(self, file, password=None):
-        self._file = file
+    def __init__(self, filename, password=None):
+        self._filename = filename
+        self._file = open(filename, 'rb')
+        file = self._file
         self.password = password
         self.header = file.read(len(MAGIC_7Z))
         if self.header != MAGIC_7Z:
@@ -783,10 +741,10 @@ class Archive7z(Base):
                 folder_pos += packinfo.packsizes[fidx]
                 src_pos = folder_pos
                 fidx += 1
-        
+
         self.numfiles = len(self.files)
         self.filenames = map(lambda x: x.filename, self.files)
-        
+
     # Find archive file indexes when folder transitions occur
     def get_folder_transition_indexes(self, numunpackstreams):
         accum = 0
@@ -797,7 +755,7 @@ class Archive7z(Base):
         return result
 
     # interface like TarFile
-        
+
     def getmember(self, name):
         # XXX: store files in dictionary
         for f in self.files:
@@ -821,8 +779,117 @@ class Archive7z(Base):
         for f in self.files:
             extra = (f.compressed and '%10d ' % (f.compressed)) or ' '
             print ('%10d%s%.8x %s' % (f.size, extra, f.digest, f.filename))
-            
+
+    def get_lzma_coder(self, coders):
+        # 1-4 compressed streams per folder. If 1, this
+        # trivially works. The 4-cases so far have all shown up as
+        # LZMA-LZMA-LZMA-BCJ2 (reversed from what 7z l -slt displays), which
+        # means that either way the last listed method wins.
+        assert len(coders) >= 1
+        return coders[-1]
+
+    def get_lzma_filters(self, coders):
+        from lzma import FILTER_LZMA1, FILTER_X86
+
+        # get max dict size?
+        dict_size = None
+        for coder in coders:
+            if 'properties' in coder:
+                # http://svn.python.org/projects/external/xz-5.0.3/doc/lzma-file-format.txt
+                assert coder['properties'][0] == 93 # lc/lp/pb are 3/0/2
+                new_dict_size = unpack('<I', coder['properties'][1:5])[0]
+                if not dict_size or new_dict_size > dict_size:
+                    dict_size = new_dict_size
+        assert dict_size
+
+        method = self.get_lzma_coder(coders)['method']
+
+        if method == unhexlify("030101"):
+            return [{'id':FILTER_LZMA1, 'dict_size':dict_size, 'nice_len': 273}]
+        if method == unhexlify("0303011b"): # BCJ2/LZMA1
+            # Why doesn't this require specifying BCJ2 too?
+            return [{'id':FILTER_LZMA1, 'dict_size':dict_size,  'nice_len': 273}]
+
+        assert False
+
+    def decompress_raw_lzma(self, data, memlimit=None, filters=None):
+        # Based on lzma.decompress(...), but allows use of
+        # FORMAT_RAW sans embedded end-of-stream marker, since 7z
+        # files usually don't have them.
+        from lzma import LZMADecompressor, FORMAT_RAW
+        results = []
+        while True:
+            decomp = LZMADecompressor(FORMAT_RAW, memlimit, filters)
+            results.append(decomp.decompress(data))
+            if not decomp.unused_data:
+                return b"".join(results)
+            # There is unused data left over. Proceed to next stream.
+            data = decomp.unused_data
+
+    def get_pack_positions(self):
+        from itertools import accumulate
+        packinfo = self.header.main_streams.packinfo
+        packoffsets = [self.afterheader+packinfo.packpos]+list(packinfo.packsizes)
+        return list(accumulate(packoffsets))
+        # TODO: packinfo.numstreams should == sum of all folder.coders.numinstreams; verify
+
+    def get_folder_pack_indexes(self):
+        # Create mapping from folder -> pack index
+        # With liblzma, each folder has <=4 packs.
+        packindex = 0
+        indexes = {}
+        for folder in self.header.main_streams.unpackinfo.folders:
+            indexes[folder] = packindex
+            packindex += self.get_lzma_coder(folder.coders)['numinstreams']
+        return indexes
+
+    def get_folder_reader(self):
+        # Ensure extraction or verification reads each folder at most once if read in file order.
+        # Non-thread-friendly. For now, keep entire decompressed folder in RAM.
+        packindexes = self.get_folder_pack_indexes()
+        cur_folder = None
+        cur_decompressed = None
+        def inner_fn(folder):
+            nonlocal cur_folder, cur_decompressed
+            if cur_folder == folder:
+                return cur_decompressed
+
+            coder = self.get_lzma_coder(folder.coders)
+            numstreams = coder['numinstreams']
+            packpositions = self.get_pack_positions()
+            packinfo = self.header.main_streams.packinfo
+
+            src_pos = packpositions[packindexes[folder]]
+            filecontents = open(self._filename, 'rb').read()
+            packindex = packindexes[folder]
+            raw = filecontents[src_pos:src_pos+sum(packinfo.packsizes[packindex:packindex+numstreams])]
+
+            cur_decompressed = self.decompress_raw_lzma(raw, filters = self.get_lzma_filters(folder.coders))[:folder.getUnpackSize()]
+            assert len(cur_decompressed) == folder.getUnpackSize()
+
+            cur_folder = folder
+            return cur_decompressed
+
+        return inner_fn
+
+    def test7z(self):
+        read_folder = self.get_folder_reader()
+
+        prev_folder = None
+        for member in self.getmembers():
+            # does member.size always == member.uncompressed?
+            if member.emptystream:
+                continue
+
+            if prev_folder != member._folder:
+                offset = 0
+                prev_folder = member._folder
+
+            data = read_folder(member._folder)[offset:offset+member.uncompressed]
+
+            offset += member.uncompressed
+            assert crc32(data) == member.digest
+
 if __name__ == '__main__':
-    f = Archive7z(open('test.7z', 'rb'))
-    #f = Archive7z(open('pylzma.7z', 'rb'))
-    f.list()
+    f = Archive7z('test.7z').test7z()
+    f = Archive7z('pylzma.7z').test7z()

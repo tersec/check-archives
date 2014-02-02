@@ -91,16 +91,6 @@ def xz_handler(filename):
 		return False
 	return True
 
-def _7zip_handler(filename):
-	from py7zlib import Archive7z
-	Archive7z(open(filename, 'rb'))
-	try:
-		Archive7z(open(filename, 'rb'))
-		return True
-	except:
-		return False
-	return True
-
 def pil_handler(filename):
 	from PIL import Image
 	try:
@@ -123,7 +113,6 @@ def get_file_handlers():
 		BuiltinHandler(gzip_handler): ['.gz', '.tgz'],
 		BuiltinHandler(bzip2_handler): ['.bz2', '.tbz'],
 		BuiltinHandler(xz_handler): ['.xz', '.txz'],
-		#BuiltinHandler(_7zip_handler): ['.7z'],
 		ExternalHandler('7z', 't', '-bd'): ['.7z'],
 		ExternalHandler("unrar", "t", "-inul"): ['.rar'],
 		# "Can't identify TIF with mode=CMYK": https://github.com/python-imaging/Pillow/issues/257
