@@ -613,35 +613,12 @@ class Archive7z(Base):
             extra = (f.compressed and '%10d ' % (f.compressed)) or ' '
             print ('%10d%s%.8x %s' % (f.size, extra, f.digest, f.filename))
 
-    def get_lzma_coder(self, coders):
-        # 1, 2, or 4 streams per folder. 4-cases so far have all shown up as
-        # LZMA-LZMA-LZMA-BCJ2 (reversed from what 7z l -slt displays), which
-        # means that either way the last listed method wins.
-        assert len(coders) >= 1
-        return coders[-1]
+    def get_lzma_filters(self, coder):
+        from lzma import FILTER_LZMA1, FILTER_LZMA2
 
-    def get_lzma_filters(self, coders):
-        from lzma import FILTER_LZMA1, FILTER_LZMA2, FILTER_X86
-
-        dict_size = None
-        for coder in coders:
-            if 'properties' in coder:
-                new_dict_size = unpack('<I', coder['properties'][1:5])[0]
-                if not dict_size or new_dict_size > dict_size:
-                    dict_size = new_dict_size
-
-        method = self.get_lzma_coder(coders)['method']
-
-        if method == unhexlify("030101"):
-            return [{'id':FILTER_LZMA1, 'dict_size':dict_size, 'nice_len': 273}]
-        if method == unhexlify("03030103"): # BCJ/LZMA1
-            # http://sourceforge.net/p/lzmautils/discussion/708858/thread/7bd9799e/
-            # See comment elsewhere about liblzma brokenness
-            # Should be able to specify FILTER_X86 directly as
-            # part of this filter chain but channot.
-            return [{'id':FILTER_LZMA1, 'dict_size':dict_size, 'nice_len': 273}]
-        if method == unhexlify("0303011b"): # BCJ2/LZMA1
-            return [{'id':FILTER_LZMA1, 'dict_size':dict_size,  'nice_len': 273}]
+        # LZMA1 and BCJ/LZMA1 respectively
+        if coder['method'] in [unhexlify("030101"), unhexlify("03030103")]:
+            return [{'id':FILTER_LZMA1, 'dict_size':unpack('<I', coder['properties'][1:5])[0]}]
 
         raise UnsupportedCompressionMethodError
 
@@ -671,7 +648,7 @@ class Archive7z(Base):
         indexes = {}
         for folder in self.header.main_streams.unpackinfo.folders:
             indexes[folder] = packindex
-            packindex += self.get_lzma_coder(folder.coders)['numinstreams']
+            packindex += folder.coders[-1]['numinstreams']
         return indexes
 
     def get_folder_reader(self):
@@ -685,18 +662,15 @@ class Archive7z(Base):
             if cur_folder == folder:
                 return cur_unpacked
 
-            coder = self.get_lzma_coder(folder.coders)
-            numstreams = coder['numinstreams']
             packsizes = self.header.main_streams.packinfo.packsizes
-
             src_pos = self.get_pack_positions()[packindexes[folder]]
             filecontents = open(self._filename, 'rb').read()
             packindex = packindexes[folder]
 
-            BCJ_GARBAGE = b'abcdefgh'
+            BCJ_GARBAGE = b'abcdef'
             if len(folder.coders) == 1:
-                raw = filecontents[src_pos:src_pos+sum(packsizes[packindex:packindex+numstreams])]
-                cur_unpacked = self.unpack_raw(raw, filters = self.get_lzma_filters(folder.coders))
+                raw = filecontents[src_pos:src_pos+packsizes[packindex]]
+                cur_unpacked = self.unpack_raw(raw, filters = self.get_lzma_filters(folder.coders[0]))
             elif len(folder.coders) == 2:
                 # TODO: assert is BCJ
                 # http://sourceforge.net/p/lzmautils/discussion/708858/thread/da2a47a8/
@@ -706,10 +680,14 @@ class Archive7z(Base):
                 # LZM1 decoder which allows one to append a few garbage bytes to stream
                 # which one /then/ basically runs through the BCJ decoder alone via the
                 # .compress(preset = 0) => decompress(FILTER_X86) dance.
-                filters = self.get_lzma_filters(folder.coders)
-                raw = filecontents[src_pos:src_pos+sum(packsizes[packindex:packindex+numstreams])]
-                stunt_unpack = self.unpack_raw(raw, filters = filters)+BCJ_GARBAGE
-                stunt_pack = lzma.compress(stunt_unpack, format=lzma.FORMAT_RAW, filters=[{'id':lzma.FILTER_LZMA1, 'preset':0}])
+                filters = self.get_lzma_filters(folder.coders[0])
+
+                # 2 coders, 1 stream
+                raw = filecontents[src_pos:src_pos+packsizes[packindex]]
+
+                stunt_pack = lzma.compress(self.unpack_raw(raw, filters = filters)+BCJ_GARBAGE,
+                                           format=lzma.FORMAT_RAW,
+                                           filters=[{'id':lzma.FILTER_LZMA1, 'preset':0}])
 
                 cur_unpacked = self.unpack_raw(stunt_pack, filters = [{'id':lzma.FILTER_X86}]+filters)
             elif len(folder.coders) == 4:
@@ -720,7 +698,7 @@ class Archive7z(Base):
                 for ci, si in [(0, 3), (1, 2), (2, 0)]:
                     buf_base = src_pos + sum(packsizes[packindex:packindex+si])
                     buf_packed = filecontents[buf_base:buf_base+packsizes[packindex+si]]
-                    bcj2_bufs[ci] = self.unpack_raw(buf_packed, filters = self.get_lzma_filters(folder.coders[ci:ci+1]))
+                    bcj2_bufs[ci] = self.unpack_raw(buf_packed, filters = self.get_lzma_filters(folder.coders[ci]))
 
                 buf3_base = src_pos + sum(packsizes[packindex:packindex+1])
                 buf3 = filecontents[buf3_base:buf3_base+packsizes[packindex+1]]
