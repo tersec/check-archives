@@ -536,7 +536,7 @@ class Archive7z(Base):
         if hasattr(subinfo, 'unpacksizes'):
             unpacksizes = subinfo.unpacksizes
         else:
-            unpacksizes = [x.unpacksizes[0] for x in folders]
+            unpacksizes = [x.unpacksizes[-1] for x in folders]
         
         fidx = 0
         obidx = 0
@@ -635,6 +635,10 @@ class Archive7z(Base):
         if method == unhexlify("030101"):
             return [{'id':FILTER_LZMA1, 'dict_size':dict_size, 'nice_len': 273}]
         if method == unhexlify("03030103"): # BCJ/LZMA1
+            # http://sourceforge.net/p/lzmautils/discussion/708858/thread/7bd9799e/
+            # See comment elsewhere about liblzma brokenness
+            # Should be able to specify FILTER_X86 directly as
+            # part of this filter chain but channot.
             return [{'id':FILTER_LZMA1, 'dict_size':dict_size, 'nice_len': 273}]
         if method == unhexlify("0303011b"): # BCJ2/LZMA1
             return [{'id':FILTER_LZMA1, 'dict_size':dict_size,  'nice_len': 273}]
@@ -689,7 +693,26 @@ class Archive7z(Base):
             filecontents = open(self._filename, 'rb').read()
             packindex = packindexes[folder]
 
-            if numstreams == 4:
+            BCJ_GARBAGE = b'abcdefgh'
+            if len(folder.coders) == 1:
+                raw = filecontents[src_pos:src_pos+sum(packsizes[packindex:packindex+numstreams])]
+                cur_unpacked = self.unpack_raw(raw, filters = self.get_lzma_filters(folder.coders))
+            elif len(folder.coders) == 2:
+                # TODO: assert is BCJ
+                # http://sourceforge.net/p/lzmautils/discussion/708858/thread/da2a47a8/
+                # "LZMA1+BCJ made by 7-Zip" observes that "In liblzma, the BCJ decoder
+                # won't give the last bytes before LZMA1 has told the BCJ decoder that
+                # the end of the LZMA1 stream has been reached". Compensate via working
+                # LZM1 decoder which allows one to append a few garbage bytes to stream
+                # which one /then/ basically runs through the BCJ decoder alone via the
+                # .compress(preset = 0) => decompress(FILTER_X86) dance.
+                filters = self.get_lzma_filters(folder.coders)
+                raw = filecontents[src_pos:src_pos+sum(packsizes[packindex:packindex+numstreams])]
+                stunt_unpack = self.unpack_raw(raw, filters = filters)+BCJ_GARBAGE
+                stunt_pack = lzma.compress(stunt_unpack, format=lzma.FORMAT_RAW, filters=[{'id':lzma.FILTER_LZMA1, 'preset':0}])
+
+                cur_unpacked = self.unpack_raw(stunt_pack, filters = [{'id':lzma.FILTER_X86}]+filters)
+            elif len(folder.coders) == 4:
                 # FIX/TODO: assert that it's (copy, lzma1, lzma2)*3, bcj2
 
                 bcj2_bufs = [None for _ in range(3)]
@@ -702,12 +725,15 @@ class Archive7z(Base):
                 buf3_base = src_pos + sum(packsizes[packindex:packindex+1])
                 buf3 = filecontents[buf3_base:buf3_base+packsizes[packindex+1]]
 
-                cur_unpacked = Bcj2().decode(bcj2_bufs[2], bcj2_bufs[1], bcj2_bufs[0], buf3)[:folder.getUnpackSize()]
+                cur_unpacked = Bcj2().decode(bcj2_bufs[2], bcj2_bufs[1], bcj2_bufs[0], buf3)
             else:
-                raw = filecontents[src_pos:src_pos+sum(packsizes[packindex:packindex+numstreams])]
-                cur_unpacked = self.unpack_raw(raw, filters = self.get_lzma_filters(folder.coders))[:folder.getUnpackSize()]
+                raise FormatError
 
-            assert len(cur_unpacked) == folder.getUnpackSize()
+            # Unpacking can over-run by 1 byte
+            if len(cur_unpacked) == folder.getUnpackSize()+1 or len(folder.coders) == 2:
+                cur_unpacked = cur_unpacked[:folder.getUnpackSize()]
+            if len(cur_unpacked) != folder.getUnpackSize():
+                raise FormatError
             cur_folder = folder
             return cur_unpacked
 
@@ -728,10 +754,10 @@ class Archive7z(Base):
 
             data = read_folder(member._folder)[offset:offset+member.uncompressed]
 
-            offset += member.uncompressed
             if crc32(data) != member.digest:
-                print('CRC', member.filename, crc32(data), member.digest)
-                #return False
+                return False
+
+            offset += member.uncompressed
 
         return True
 
@@ -773,21 +799,21 @@ class Bcj2:
         from re import compile
         bcj_re = compile(b'[\xe8\xe9]|\x0f[\x80-\x8f]')
         while True:
-            # Copy unmodified portions between jumps
             b1 = buf0[in_pos]
-            out_buf.write(bytes([b1]))
 
             if (b1 & 0xFE) == 0xE8 or (b0 == 0x0F and (b1 & 0xF0) == 0x80):
+                out_buf.write(bytes([b1]))
                 in_pos += 1
             else:
+                # Copy unmodified portions between jumps
                 prev_in_pos = in_pos
                 try:
                     in_pos = bcj_re.search(buf0, in_pos).end(0)
                 except:
-                    out_buf.write(buf0[prev_in_pos+1:])
+                    out_buf.write(buf0[prev_in_pos:])
                     return out_buf.getbuffer()
                 b0, b1 = buf0[in_pos-2], buf0[in_pos-1]
-                out_buf.write(buf0[prev_in_pos:in_pos-1])
+                out_buf.write(buf0[prev_in_pos:in_pos])
 
             # The rest of this function is expensive, but rare
             # relative to decompressed file sizes.
