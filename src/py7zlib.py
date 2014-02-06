@@ -613,15 +613,6 @@ class Archive7z(Base):
             extra = (f.compressed and '%10d ' % (f.compressed)) or ' '
             print ('%10d%s%.8x %s' % (f.size, extra, f.digest, f.filename))
 
-    def get_lzma_filters(self, coder):
-        from lzma import FILTER_LZMA1, FILTER_LZMA2
-
-        # LZMA1 and BCJ/LZMA1 respectively
-        if coder['method'] in [unhexlify("030101"), unhexlify("03030103")]:
-            return [{'id':FILTER_LZMA1, 'dict_size':unpack('<I', coder['properties'][1:5])[0]}]
-
-        raise UnsupportedCompressionMethodError
-
     def unpack_raw(self, data, memlimit=None, filters=None):
         # Based on lzma.decompress(...), but allows use of
         # FORMAT_RAW sans embedded end-of-stream marker, since 7z
@@ -636,6 +627,14 @@ class Archive7z(Base):
             # There is unused data left over. Proceed to next stream.
             data = decomp.unused_data
 
+    def get_lzma_filters(self, coder):
+        from lzma import FILTER_LZMA1, FILTER_LZMA2
+
+        # LZMA1 and BCJ/LZMA1 respectively
+        if coder['method'] in [unhexlify("030101"), unhexlify("03030103")]:
+            return [{'id':FILTER_LZMA1, 'dict_size':unpack('<I', coder['properties'][1:5])[0]}]
+
+        raise UnsupportedCompressionMethodError
     def get_folder_pack_indexes(self):
         # Create mapping from folder -> pack index
         packindex = 0
@@ -694,7 +693,11 @@ class Archive7z(Base):
                 buf3_base = src_pos + packsizes[packindex]
                 buf3 = filecontents[buf3_base:buf3_base+packsizes[packindex+1]]
 
-                cur_unpacked = Bcj2().decode(bcj2_bufs[2], bcj2_bufs[1], bcj2_bufs[0], buf3)
+                try:
+                    cur_unpacked = bcj2_decode(bcj2_bufs[2], bcj2_bufs[1], bcj2_bufs[0], buf3)
+                except IndexError:
+                    # In case the decoder runs off the end of one of the buffers
+                    raise FormatError
             else:
                 raise FormatError
 
@@ -730,103 +733,94 @@ class Archive7z(Base):
 
         return True
 
-class Bcj2:
-    def RC_TEST(self):
-        if self.buf3_pos == len(self.buf3):
-            raise ArchiveError
+def bcj2_decode(buf0, buf1, buf2, buf3):
+    # Based on public-domain bcj2.c by Igor Pavlov
+    buf0_pos, buf1_pos, buf2_pos, buf3_pos = 0, 0, 0, 0
 
-    def initalize(self, ):
-        self.kNumBitModelTotalBits = 11
-        self.kBitModelTotal = 1 << self.kNumBitModelTotalBits
-        self.p = [self.kBitModelTotal >> 1 for _ in range(256 + 2)]
+    # RC_INIT2
+    code = 0
+    _range = 0xFFFFFFFF
+    for i in range(5):
+        code = ((code << 8) | buf3[buf3_pos]) & 0xFFFFFFFF
+        buf3_pos += 1
 
-        # RC_INIT2
-        self.code = 0
-        self.range = 0xFFFFFFFF
-        for i in range(5):
-            self.RC_TEST()
-            self.code = ((self.code << 8) | self.buf3[self.buf3_pos]) & 0xFFFFFFFF
-            self.buf3_pos += 1
+    # kBitModelTotal >> 1 == (1 << 11) >> 1 == 1024
+    p = [1024 for _ in range(256 + 2)]
+    in_pos, out_pos = 0, 0
+    out_buf = BytesIO()
+    ttt, bound = 0, 0
+    b0 = None
 
-    def NORMALIZE(self):
-        if self.range < (1<<24): # kTopValue = 1 << kNumTopBits = 1 << 24
-            self.RC_TEST()
-            self.range = (self.range << 8) & 0xFFFFFFFF
-            self.code = ((self.code << 8) | self.buf3[self.buf3_pos]) & 0xFFFFFFFF
-            self.buf3_pos += 1
+    from re import compile
+    bcj_re = compile(b'[\xe8\xe9]|\x0f[\x80-\x8f]')
+    while True:
+        b1 = buf0[in_pos]
 
-    def decode(self, buf0, buf1, buf2, buf3):
-        # Based on public-domain bcj2.c by Igor Pavlov
-        buf0_pos, buf1_pos, buf2_pos, self.buf3, self.buf3_pos = 0, 0, 0, buf3, 0
-        self.initalize()
+        if (b1 & 0xFE) == 0xE8 or (b0 == 0x0F and (b1 & 0xF0) == 0x80):
+            out_buf.write(bytes([b1]))
+            in_pos += 1
+            out_pos += 1
+        else:
+            # Copy unmodified portions between jumps
+            prev_in_pos = in_pos
+            try:
+                in_pos = bcj_re.search(buf0, in_pos).end(0)
+            except:
+                out_buf.write(buf0[prev_in_pos:])
+                return out_buf.getbuffer()
+            b0, b1 = buf0[in_pos-2], buf0[in_pos-1]
+            out_buf.write(buf0[prev_in_pos:in_pos])
+            out_pos += in_pos - prev_in_pos
 
-        in_pos = 0
-        out_buf = BytesIO()
-        ttt, self.bound = 0, 0
-        b0 = None
+        # The rest of this function is expensive, but rare
+        # relative to decompressed file sizes.
+        if buf0_pos == len(buf0):
+            break
 
-        from re import compile
-        bcj_re = compile(b'[\xe8\xe9]|\x0f[\x80-\x8f]')
-        while True:
-            b1 = buf0[in_pos]
+        p_ind = b0 if b1 == 0xE8 else 256 if b1 == 0xE9 else 257
 
-            if (b1 & 0xFE) == 0xE8 or (b0 == 0x0F and (b1 & 0xF0) == 0x80):
-                out_buf.write(bytes([b1]))
-                in_pos += 1
+        ttt = p[p_ind]
+        bound = (_range >> 11) * ttt # kNumBitModelTotalBits == 11
+        # IF_BIT_0
+        if code < bound:
+            # UPDATE_0
+            _range = bound
+            # kBitModelTotal = 1 << kNumBitModelTotalBits == 1 << 11 == 2048
+            # kNumMoveBits == 5
+            p[p_ind] = ttt + ((2048 - ttt) >> 5)
+
+            # NORMALIZE
+            if _range < (1<<24): # kTopValue = 1 << kNumTopBits = 1 << 24
+                _range = (_range << 8) & 0xFFFFFFFF
+                code = ((code << 8) | buf3[buf3_pos]) & 0xFFFFFFFF
+                buf3_pos += 1
+
+            b0 = b1
+        else:
+            # UPDATE_1
+            _range -= bound
+            code -= bound
+            # kNumMoveBits == 5
+            p[p_ind] = ttt - (ttt >> 5)
+
+            # NORMALIZE
+            if _range < (1<<24): # kTopValue = 1 << kNumTopBits = 1 << 24
+                _range = (_range << 8) & 0xFFFFFFFF
+                code = ((code << 8) | buf3[buf3_pos]) & 0xFFFFFFFF
+                buf3_pos += 1
+
+            if b1 == 0xE8:
+                dest = ((buf1[buf1_pos]<<24|(buf1[buf1_pos+1]<<16)|(buf1[buf1_pos+2]<<8)|buf1[buf1_pos+3]) - out_pos - 4)%(1<<32)
+                buf1_pos += 4
             else:
-                # Copy unmodified portions between jumps
-                prev_in_pos = in_pos
-                try:
-                    in_pos = bcj_re.search(buf0, in_pos).end(0)
-                except:
-                    out_buf.write(buf0[prev_in_pos:])
-                    return out_buf.getbuffer()
-                b0, b1 = buf0[in_pos-2], buf0[in_pos-1]
-                out_buf.write(buf0[prev_in_pos:in_pos])
+                dest = ((buf2[buf2_pos]<<24|(buf2[buf2_pos+1]<<16)|(buf2[buf2_pos+2]<<8)|buf2[buf2_pos+3]) - out_pos - 4)%(1<<32)
+                buf2_pos += 4
 
-            # The rest of this function is expensive, but rare
-            # relative to decompressed file sizes.
-            if buf0_pos == len(buf0):
-                break
+            out_buf.write(pack('<I',dest))
+            out_pos += 4
+            b0 = (dest >> 24) & 0xff
 
-            p_ind = b0 if b1 == 0xE8 else 256 if b1 == 0xE9 else 257
-
-            ttt = self.p[p_ind]
-            kNumMoveBits = 5
-            self.bound = (self.range >> self.kNumBitModelTotalBits) * ttt
-            # IF_BIT_0
-            if self.code < self.bound:
-                # UPDATE_0
-                self.range = self.bound
-                self.p[p_ind] = ttt + ((self.kBitModelTotal - ttt) >> kNumMoveBits)
-                self.NORMALIZE()
-
-                b0 = b1
-            else:
-                # UPDATE_1
-                self.range -= self.bound
-                self.code -= self.bound
-                self.p[p_ind] = ttt - (ttt >> kNumMoveBits)
-                self.NORMALIZE()
-
-                if b1 == 0xE8:
-                    tmp_bufpos = buf1_pos
-                    v = lambda i:buf1[tmp_bufpos+i]
-                    if len(buf1) - buf1_pos < 4:
-                        raise ArchiveError
-                    buf1_pos += 4
-                else:
-                    tmp_bufpos = buf2_pos
-                    v = lambda i:buf2[tmp_bufpos+i]
-                    if buf2_pos + 4 > len(buf2):
-                        raise ArchiveError
-                    buf2_pos += 4
-
-                dest = ((v(0)<<24|(v(1)<<16)|(v(2)<<8)|v(3)) - len(out_buf.getbuffer()) - 4)%(1<<32)
-                out_buf.write(pack('<I',dest))
-                b0 = (dest >> 24) & 0xff
-
-        return out_buf.getbuffer()
+    return out_buf.getbuffer()
 
 if __name__ == '__main__':
     f = Archive7z('test.7z').test7z()
