@@ -636,12 +636,6 @@ class Archive7z(Base):
             # There is unused data left over. Proceed to next stream.
             data = decomp.unused_data
 
-    def get_pack_positions(self):
-        from itertools import accumulate
-        packinfo = self.header.main_streams.packinfo
-        packoffsets = [self.afterheader+packinfo.packpos]+list(packinfo.packsizes)
-        return list(accumulate(packoffsets))
-
     def get_folder_pack_indexes(self):
         # Create mapping from folder -> pack index
         packindex = 0
@@ -654,7 +648,6 @@ class Archive7z(Base):
     def get_folder_reader(self):
         # Ensure extraction or verification reads each folder at most once if read in file order.
         # For now, keep entire decompressed folder in RAM.
-        packindexes = self.get_folder_pack_indexes()
         cur_folder = None
         cur_unpacked = None
         def inner_fn(folder):
@@ -663,14 +656,13 @@ class Archive7z(Base):
                 return cur_unpacked
 
             packsizes = self.header.main_streams.packinfo.packsizes
-            src_pos = self.get_pack_positions()[packindexes[folder]]
+            packindex = self.get_folder_pack_indexes()[folder]
+            src_pos = self.afterheader+self.header.main_streams.packinfo.packpos+sum(packsizes[:packindex])
             filecontents = open(self._filename, 'rb').read()
-            packindex = packindexes[folder]
 
-            BCJ_GARBAGE = b'abcdef'
             if len(folder.coders) == 1:
-                raw = filecontents[src_pos:src_pos+packsizes[packindex]]
-                cur_unpacked = self.unpack_raw(raw, filters = self.get_lzma_filters(folder.coders[0]))
+                cur_unpacked = self.unpack_raw(filecontents[src_pos:src_pos+packsizes[packindex]],
+                                               filters = self.get_lzma_filters(folder.coders[0]))
             elif len(folder.coders) == 2:
                 # TODO: assert is BCJ
                 # http://sourceforge.net/p/lzmautils/discussion/708858/thread/da2a47a8/
@@ -684,8 +676,7 @@ class Archive7z(Base):
 
                 # 2 coders, 1 stream
                 raw = filecontents[src_pos:src_pos+packsizes[packindex]]
-
-                stunt_pack = lzma.compress(self.unpack_raw(raw, filters = filters)+BCJ_GARBAGE,
+                stunt_pack = lzma.compress(self.unpack_raw(raw, filters = filters)+b'abcd',
                                            format=lzma.FORMAT_RAW,
                                            filters=[{'id':lzma.FILTER_LZMA1, 'preset':0}])
 
@@ -693,14 +684,14 @@ class Archive7z(Base):
             elif len(folder.coders) == 4:
                 # FIX/TODO: assert that it's (copy, lzma1, lzma2)*3, bcj2
 
-                bcj2_bufs = [None for _ in range(3)]
+                bcj2_bufs = [None, None, None]
                 # coder index => stream index rearrangement
                 for ci, si in [(0, 3), (1, 2), (2, 0)]:
                     buf_base = src_pos + sum(packsizes[packindex:packindex+si])
                     buf_packed = filecontents[buf_base:buf_base+packsizes[packindex+si]]
                     bcj2_bufs[ci] = self.unpack_raw(buf_packed, filters = self.get_lzma_filters(folder.coders[ci]))
 
-                buf3_base = src_pos + sum(packsizes[packindex:packindex+1])
+                buf3_base = src_pos + packsizes[packindex]
                 buf3 = filecontents[buf3_base:buf3_base+packsizes[packindex+1]]
 
                 cur_unpacked = Bcj2().decode(bcj2_bufs[2], bcj2_bufs[1], bcj2_bufs[0], buf3)
