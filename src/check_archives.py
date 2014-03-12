@@ -123,8 +123,7 @@ def get_file_handlers():
 		BuiltinHandler(_7z_handler): ['.7z'],
 		ExternalHandler("unrar", "t", "-inul"): ['.rar'],
 		# "Can't identify TIF with mode=CMYK": https://github.com/python-imaging/Pillow/issues/257
-		BuiltinHandler(pil_handler): ['.png', '.jpg', '.gif'],
-		ExternalHandler("mp3val", "-si"): ['.mp3']
+		BuiltinHandler(pil_handler): ['.png', '.jpg', '.gif']
 	}.items())
 
 # Only one copy should exist, so that the presence caching
