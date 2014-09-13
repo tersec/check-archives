@@ -10,16 +10,6 @@ def read_until_end(fh):
 		pass
 	return
 
-class BuiltinHandler:
-	def present(self):
-		return True
-
-	def __call__(self, filename):
-		return self.handler_fn(filename)
-
-	def __init__(self, handler_fn):
-		self.handler_fn = handler_fn
-
 def zip_handler(filename):
 	# Encrypted .zip handling purportedly exists. For now, fail.
 	# http://mail.python.org/pipermail/python-checkins/2007-February/058579.html
@@ -55,10 +45,10 @@ def reverse_index(handler_map):
 
 def get_file_handlers():
 	return reverse_index({
-		BuiltinHandler(zip_handler):
+		zip_handler:
 			['.zip', '.odt', '.ods', '.odp', '.odg', '.docx', '.xlsx', '.pptx', '.jar', '.apk', '.cbz', '.epub', '.xpi'],
-		BuiltinHandler(xz_handler): ['.xz', '.txz'],
-		BuiltinHandler(pil_handler): ['.png', '.jpg', '.gif', '.tiff', '.tif']
+		xz_handler: ['.xz', '.txz'],
+		pil_handler: ['.png', '.jpg', '.gif', '.tiff', '.tif']
 	}.items())
 
 # Only one copy should exist, so that the presence caching
@@ -77,7 +67,6 @@ def check_file_integrity(lock_filename_pair):
 	correct = \
 	    not access(filename, R_OK) or \
 	    not handler or \
-	    not handler.present() or \
 	    handler(filename)
 	return filename, correct
 
@@ -141,8 +130,7 @@ def search_dir(root, check_fn):
 			annotated_names = filter_names_with_sizes(dir_, files)
 			get_byte_sum = lambda _:sum(map(lambda __:annotated_names[__], _))
 
-			handled_names = [_ for _ in annotated_names.keys()
-					 if (lambda __:__ and __.present())(get_file_handler(_))]
+			handled_names = [_ for _ in annotated_names.keys() if get_file_handler(_)]
 			succeeded_names = [_[0]
 						 for _ in workers.map(check_fn, zip([m.Lock()]*len(handled_names),
 										    handled_names))
