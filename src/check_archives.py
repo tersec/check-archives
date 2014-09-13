@@ -10,17 +10,6 @@ def read_until_end(fh):
 		pass
 	return
 
-def external_handler(*args):
-	from subprocess import Popen, PIPE
-	ext = Popen(args, stdin=PIPE, stdout=PIPE, stderr=PIPE, shell=False)
-
-	# Without this, some external programs hang on .wait()
-	ext.stdin.close()
-	read_until_end(ext.stdout)
-	read_until_end(ext.stderr)
-
-	return ext.wait() == 0
-
 class BuiltinHandler:
 	def present(self):
 		return True
@@ -30,32 +19,6 @@ class BuiltinHandler:
 
 	def __init__(self, handler_fn):
 		self.handler_fn = handler_fn
-
-class ExternalHandler:
-	def present(self):
-		# Assume when called without arguments, the external programs don't do
-		# anything harmful.
-		if self.cached_presence:
-			return self.cached_presence
-
-		# Otherwise try,.
-		try:
-			external_handler(self.program_name)
-			self.cached_presence = True
-		except OSError:
-			print(self.program_name)
-			assert False
-			self.cached_presence = False
-		return self.cached_presence
-
-	def __call__(self, filename):
-		return self.handler_fn(filename)
-
-	def __init__(self, program_name, *parameters):
-		# Assumes that the filename can be last argument
-		self.handler_fn = lambda filename:external_handler(*([program_name] + list(parameters) + [filename]))
-		self.cached_presence = None
-		self.program_name = program_name
 
 def zip_handler(filename):
 	# Encrypted .zip handling purportedly exists. For now, fail.
@@ -74,13 +37,6 @@ def xz_handler(filename):
 	except:
 		return False
 	return True
-
-def _7z_handler(filename):
-	from py7zlib import Archive7z
-	try:
-		return Archive7z(filename).test7z()
-	except:
-		return False
 
 def pil_handler(filename):
 	from PIL import Image
@@ -102,10 +58,7 @@ def get_file_handlers():
 		BuiltinHandler(zip_handler):
 			['.zip', '.odt', '.ods', '.odp', '.odg', '.docx', '.xlsx', '.pptx', '.jar', '.apk', '.cbz', '.epub', '.xpi'],
 		BuiltinHandler(xz_handler): ['.xz', '.txz'],
-		BuiltinHandler(_7z_handler): ['.7z'],
-		ExternalHandler("rar", "t", "-inul"): ['.rar'],
-		# "Can't identify TIF with mode=CMYK": https://github.com/python-imaging/Pillow/issues/257
-		BuiltinHandler(pil_handler): ['.png', '.jpg', '.gif']
+		BuiltinHandler(pil_handler): ['.png', '.jpg', '.gif', '.tiff', '.tif']
 	}.items())
 
 # Only one copy should exist, so that the presence caching
