@@ -67,22 +67,6 @@ def zip_handler(filename):
 	except:
 		return False
 
-def bzip2_handler(filename):
-	from bz2 import BZ2File
-	try:
-		read_until_end(BZ2File(filename, 'rb'))
-	except:
-		return False
-	return True
-
-def gzip_handler(filename):
-	from gzip import GzipFile
-	try:
-		read_until_end(GzipFile(filename, 'rb'))
-	except:
-		return False
-	return True
-
 def xz_handler(filename):
 	from lzma import LZMAFile
 	try:
@@ -117,11 +101,9 @@ def get_file_handlers():
 	return reverse_index({
 		BuiltinHandler(zip_handler):
 			['.zip', '.odt', '.ods', '.odp', '.odg', '.docx', '.xlsx', '.pptx', '.jar', '.apk', '.cbz', '.epub', '.xpi'],
-		BuiltinHandler(gzip_handler): ['.gz', '.tgz'],
-		BuiltinHandler(bzip2_handler): ['.bz2', '.tbz'],
 		BuiltinHandler(xz_handler): ['.xz', '.txz'],
 		BuiltinHandler(_7z_handler): ['.7z'],
-		ExternalHandler("unrar", "t", "-inul"): ['.rar'],
+		ExternalHandler("rar", "t", "-inul"): ['.rar'],
 		# "Can't identify TIF with mode=CMYK": https://github.com/python-imaging/Pillow/issues/257
 		BuiltinHandler(pil_handler): ['.png', '.jpg', '.gif']
 	}.items())
@@ -209,7 +191,7 @@ def search_dir(root, check_fn):
 			handled_names = [_ for _ in annotated_names.keys()
 					 if (lambda __:__ and __.present())(get_file_handler(_))]
 			succeeded_names = [_[0]
-						 for _ in map(check_fn, zip([m.Lock()]*len(handled_names),
+						 for _ in workers.map(check_fn, zip([m.Lock()]*len(handled_names),
 										    handled_names))
 						 if _[1]]
 
