@@ -2,29 +2,12 @@
 
 def read_until_end(fh):
 	# handles fileobj-like objects
-	# Designed to pass through most file reading errors
-	# so caller can catch them.
 	try:
 		while len(fh.read(1024**2*16)) > 0: pass
 	except EOFError:
 		pass
-	return
-
-def zip_handler(filename):
-	# Encrypted .zip handling purportedly exists. For now, fail.
-	# http://mail.python.org/pipermail/python-checkins/2007-February/058579.html
-	# http://mail.python.org/pipermail/patches/2007-February/021638.html
-	from zipfile import ZipFile
-	try:
-		return ZipFile(filename).testzip() == None
 	except:
-		return False
-
-def xz_handler(filename):
-	from lzma import LZMAFile
-	try:
-		read_until_end(LZMAFile(filename, 'rb'))
-	except:
+		# If not EOF, then some other reading error occurred.
 		return False
 	return True
 
@@ -32,9 +15,9 @@ def pil_handler(filename):
 	from PIL import Image
 	try:
 		Image.open(filename).load()
+		return True
 	except:
 		return False
-	return True
 
 def reverse_index(handler_map):
 	handlers = {}
@@ -44,17 +27,19 @@ def reverse_index(handler_map):
 	return handlers
 
 def get_file_handlers():
+	from lzma import LZMAFile
+	from zipfile import ZipFile
 	return reverse_index({
-		zip_handler:
+		# Encrypted .zip handling purportedly exists. For now, fail.
+		# http://mail.python.org/pipermail/python-checkins/2007-February/058579.html
+		# http://mail.python.org/pipermail/patches/2007-February/021638.html
+		lambda filename:(ZipFile(filename).testzip() == None):
 			['.zip', '.odt', '.ods', '.odp', '.odg', '.docx', '.xlsx', '.pptx', '.jar', '.apk', '.cbz', '.epub', '.xpi'],
-		xz_handler: ['.xz', '.txz'],
+		lambda filename:read_until_end(LZMAFile(filename, 'rb')): ['.xz', '.txz'],
 		pil_handler: ['.png', '.jpg', '.gif', '.tiff', '.tif']
 	}.items())
 
-# Only one copy should exist, so that the presence caching
-# actually functions.
 file_handlers = get_file_handlers()
-
 def get_file_handler(filename):
 	from os.path import splitext
 	return file_handlers.get(splitext(filename)[1].lower(), None)
