@@ -1,21 +1,8 @@
 #!/usr/bin/env python3
 
-def read_until_end(fh):
-	# handles fileobj-like objects
+def eat_exceptions(func):
 	try:
-		while len(fh.read(1024**2*16)) > 0: pass
-	except EOFError:
-		pass
-	except:
-		# If not EOF, then some other reading error occurred.
-		return False
-	return True
-
-def pil_handler(filename):
-	from PIL import Image
-	try:
-		Image.open(filename).load()
-		return True
+		return func()
 	except:
 		return False
 
@@ -27,16 +14,22 @@ def reverse_index(handler_map):
 	return handlers
 
 def get_file_handlers():
+	from itertools import repeat
 	from lzma import LZMAFile
+	from PIL import Image
 	from zipfile import ZipFile
 	return reverse_index({
 		# Encrypted .zip handling purportedly exists. For now, fail.
-		# http://mail.python.org/pipermail/python-checkins/2007-February/058579.html
-		# http://mail.python.org/pipermail/patches/2007-February/021638.html
+		# https://mail.python.org/pipermail/python-checkins/2007-February/058579.html
+		# https://mail.python.org/pipermail/patches/2007-February/021638.html
 		lambda filename:(ZipFile(filename).testzip() == None):
-			['.zip', '.odt', '.ods', '.odp', '.odg', '.docx', '.xlsx', '.pptx', '.jar', '.apk', '.cbz', '.epub', '.xpi'],
-		lambda filename:read_until_end(LZMAFile(filename, 'rb')): ['.xz', '.txz'],
-		pil_handler: ['.png', '.jpg', '.gif', '.tiff', '.tif']
+			['.zip', '.odt', '.ods', '.odp', '.odg', '.docx', '.xlsx', '.pptx',
+			 '.jar', '.apk', '.cbz', '.epub', '.xpi'],
+		lambda filename:(lambda fh:next(filter(lambda _:fh.read(2**24)==b'', repeat(True))))
+		                (LZMAFile(filename, 'rb')):
+			['.xz', '.txz'],
+		lambda filename:bool(Image.open(filename).load()):
+			['.png', '.jpg', '.gif', '.tiff', '.tif']
 	}.items())
 
 file_handlers = get_file_handlers()
@@ -50,9 +43,9 @@ def check_file_integrity(lock_filename_pair):
 	handler = get_file_handler(filename)
 	# Handler-not-found ==> succeed.
 	correct = \
-	    not access(filename, R_OK) or \
 	    not handler or \
-	    handler(filename)
+	    not access(filename, R_OK) or \
+	    eat_exceptions(lambda:handler(filename))
 	return filename, correct
 
 
@@ -132,7 +125,7 @@ def search_dir(root, check_fn):
 
 def cmdline_parser():
 	from optparse import OptionParser
-	parser = OptionParser(usage='usage %prog [options] [scan_directory]', version="%prog 0.4")
+	parser = OptionParser(usage='usage %prog [options] [scan_directory]', version="%prog 0.5")
 	# parser.add_option('-v', action='store_true', dest='verbose', help='display progress')
 	parser.add_option('-q', action='store_false', dest='verbose', help='produce no output', default=True)
 
