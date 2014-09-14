@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
 
-def eat_exceptions(func):
-	try:
-		return func()
-	except:
-		return False
-
 def reverse_index(handler_map):
 	handlers = {}
 	for handler, extensions in handler_map:
@@ -19,9 +13,6 @@ def get_file_handlers():
 	from PIL import Image
 	from zipfile import ZipFile
 	return reverse_index({
-		# Encrypted .zip handling purportedly exists. For now, fail.
-		# https://mail.python.org/pipermail/python-checkins/2007-February/058579.html
-		# https://mail.python.org/pipermail/patches/2007-February/021638.html
 		lambda filename:(ZipFile(filename).testzip() == None):
 			['.zip', '.odt', '.ods', '.odp', '.odg', '.docx', '.xlsx', '.pptx',
 			 '.jar', '.apk', '.cbz', '.epub', '.xpi'],
@@ -37,19 +28,36 @@ def get_file_handler(filename):
 	from os.path import splitext
 	return file_handlers.get(splitext(filename)[1].lower(), None)
 
+NUM_UNCHECKED, NUM_CORRECT, NUM_INCORRECT, BYTES_UNCHECKED, \
+BYTES_CORRECT, BYTES_INCORRECT = range(6)
+
 def check_file_integrity(lock_filename_pair):
-	from os import access, R_OK
+	from os import stat
 	_, filename = lock_filename_pair
 	handler = get_file_handler(filename)
-	# Handler-not-found ==> succeed.
-	correct = \
-	    not handler or \
-	    not access(filename, R_OK) or \
-	    eat_exceptions(lambda:handler(filename))
-	return filename, correct
+
+	try:
+		size = stat(filename).st_size
+
+		if not handler:
+			return [1, 0, 0, size, 0, 0]
+		if handler(filename):
+			return [0, 1, 0, 0, size, 0]
+		else:
+			return [0, 0, 1, 0, 0, size]
+
+	except FileNotFoundError:
+		# Could be from handler or stat()
+		return [0, 0, 0, 0, 0, 0]
+	except PermissionError:
+		# stat() shouldn't raise this, but still slightly risky
+		return [1, 0, 0, size, 0, 0]
+	except:
+		# Otherwise, assume error found (see else branch above)
+		return [0, 0, 1, 0, 0, size]
 
 
-### No console output occurs above here.
+### No display output above here.
 def get_available_columns():
 	from shutil import get_terminal_size
 	return get_terminal_size(fallback=(72, 24)).columns-len(': fail ')
@@ -66,62 +74,44 @@ def elide_path(path):
 def display_file_integrity(lock_filename_pair):
 	from sys import stdout
 	lock, filename = lock_filename_pair
-	filename, correct = check_file_integrity(lock_filename_pair)
 	padding = ' '*(get_available_columns() - len(filename))
+	stats = check_file_integrity(lock_filename_pair)
+
 	lock.acquire()
-	if correct:
+	assert stats[NUM_CORRECT] == 0 or stats[NUM_INCORRECT] == 0
+	assert stats[BYTES_CORRECT] == 0 or stats[BYTES_INCORRECT] == 0
+	if stats[NUM_CORRECT] == 1:
 		stdout.write('\r%s: ok  %s'%(elide_path(filename), padding))
-	else:
+	elif stats[NUM_INCORRECT] == 1:
 		# Need to pad to wipe out rest of previous 'ok' lines
 		stdout.write('\r%s: fail%s\n'%(filename, padding))
 	lock.release()
 
 	# multiprocessing pools only function with top-level functions because those can be pickled
-	return filename, correct
+	return stats
 
-def filter_names_with_sizes(dir_, names):
-	# Derive file sizes from stat(...), but filter out file entirely
-	# if stat(...) throws an OSError, such as in the case of a broken
-	# symlink.
-	from os import stat
-	from os.path import join
-	names_with_sizes = []
-	for filename in names:
-		path = join(dir_, filename)
-		try:
-			names_with_sizes.append((path, stat(path)[6]))
-		except OSError:
-			# Move on to next filename, but don't include this one.
-			pass
-	return dict(names_with_sizes)
-
-def search_dir(root, check_fn):
-	from multiprocessing import Pool, cpu_count
-	from multiprocessing import Manager
+def search_dir(root):
+	from itertools import chain
 	from os import walk
-	total, checked, succeeded, t_bytes, c_bytes, s_bytes = 0, 0, 0, 0, 0, 0
+	from os.path import join
+	return chain(*[list(map(lambda filename:join(dir_, filename), files))
+	               for dir_, _, files in walk(root)])
+
+def check_files(root, check_fn):
+	from functools import reduce
+	from itertools import repeat
+	from multiprocessing import Manager, Pool, cpu_count
+	filenames = list(search_dir(root))
+	from random import shuffle; shuffle(filenames)
 
 	with Manager() as m:
-		workers = Pool(processes = cpu_count())
+		stats = Pool(processes=cpu_count()).map(check_fn, zip(repeat(m.Lock()), filenames))
 
-		for dir_, dirs, files in walk(root):
-			annotated_names = filter_names_with_sizes(dir_, files)
-			get_byte_sum = lambda _:sum(map(lambda __:annotated_names[__], _))
-
-			handled_names = [_ for _ in annotated_names.keys() if get_file_handler(_)]
-			succeeded_names = [_[0]
-						 for _ in workers.map(check_fn, zip([m.Lock()]*len(handled_names),
-										    handled_names))
-						 if _[1]]
-
-			succeeded += len(succeeded_names)
-			s_bytes += get_byte_sum(succeeded_names)
-			total += len(annotated_names)
-			t_bytes += get_byte_sum(annotated_names)
-			checked += len(handled_names)
-			c_bytes += get_byte_sum(handled_names)
-
-	return total, checked, succeeded, t_bytes, c_bytes, s_bytes
+	total = reduce(lambda a,b:[x+y for x, y in zip(a, b)], stats, [0, 0, 0, 0, 0 ,0])
+	return  total[NUM_CORRECT]+total[NUM_INCORRECT]+total[NUM_UNCHECKED], \
+		total[NUM_CORRECT]+total[NUM_INCORRECT], total[NUM_CORRECT], \
+		total[BYTES_CORRECT]+total[BYTES_INCORRECT]+total[BYTES_UNCHECKED], \
+		total[BYTES_CORRECT]+total[BYTES_INCORRECT], total[BYTES_CORRECT]
 
 def cmdline_parser():
 	from optparse import OptionParser
@@ -135,8 +125,8 @@ def cmdline_parser():
 def main():
 	from sys import stdout
 	verbose, args = cmdline_parser()
-	t, c, s, t_bytes, c_bytes, s_bytes = search_dir(args[0] if args != [] else '.',
-							display_file_integrity if verbose else check_file_integrity)
+	t, s, c, t_bytes, s_bytes, c_bytes = check_files(args[0] if args != [] else '.',
+	                                                 display_file_integrity if verbose else check_file_integrity)
 	if verbose:
 		# TODO: this message lies (can get here even w/ failures)
 		# avoid division by zero.
@@ -146,10 +136,8 @@ def main():
 	return not (s==c)
 
 if __name__ == '__main__':
-	from sys import exit
-
 	# For multiprocessing on Win32
 	from multiprocessing import freeze_support
 	freeze_support()
 
-	exit(main())
+	from sys import exit; exit(main())
