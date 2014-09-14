@@ -1,33 +1,29 @@
 #!/usr/bin/env python3
 
-def reverse_index(handler_map):
-	handlers = {}
-	for handler, extensions in handler_map:
-		for extension in extensions:
-			handlers[extension] = handler
-	return handlers
-
 def get_file_handlers():
-	from itertools import repeat
+	from itertools import chain, repeat
 	from lzma import LZMAFile
 	from PIL import Image
 	from zipfile import ZipFile
-	return reverse_index({
-		lambda filename:(ZipFile(filename).testzip() == None):
-			['.zip', '.odt', '.ods', '.odp', '.odg', '.docx', '.xlsx', '.pptx',
-			 '.jar', '.apk', '.cbz', '.epub', '.xpi'],
-		lambda filename:(lambda fh:next(filter(lambda _:fh.read(2**24)==b'', repeat(True))))
-		                (LZMAFile(filename, 'rb')):
-			['.xz', '.txz'],
-		lambda filename:bool(Image.open(filename).load()):
-			['.png', '.jpg', '.gif', '.tiff', '.tif']
-	}.items())
+
+	return dict(chain(*(zip(exts, repeat(fn)) for exts, fn in [
+		(['.zip', '.odt', '.ods', '.odp', '.odg', '.docx', '.xlsx', '.pptx',
+		 '.jar', '.apk', '.cbz', '.epub', '.xpi'],
+		 lambda filename:(ZipFile(filename).testzip() == None)),
+		(['.xz', '.txz'],
+		 lambda filename:(lambda fh:next(filter(lambda _:fh.read(2**24)==b'', repeat(True))))
+		                 (LZMAFile(filename, 'rb'))),
+		(['.png', '.jpg', '.gif', '.tiff', '.tif'],
+		 lambda filename:bool(Image.open(filename).load()))
+	])))
 
 file_handlers = get_file_handlers()
 def get_file_handler(filename):
 	from os.path import splitext
 	return file_handlers.get(splitext(filename)[1].lower(), None)
 
+### Until otherwise noted, functions run in multiprocessing
+### subprocesses.
 NUM_UNCHECKED, NUM_CORRECT, NUM_INCORRECT, BYTES_UNCHECKED, \
 BYTES_CORRECT, BYTES_INCORRECT = range(6)
 
@@ -47,15 +43,13 @@ def check_file_integrity(lock_filename_pair):
 			return [0, 0, 1, 0, 0, size]
 
 	except FileNotFoundError:
-		# Could be from handler or stat()
 		return [0, 0, 0, 0, 0, 0]
 	except PermissionError:
 		# stat() shouldn't raise this, but still slightly risky
 		return [1, 0, 0, size, 0, 0]
 	except:
-		# Otherwise, assume error found (see else branch above)
+		# Otherwise, assume data error (see else branch above)
 		return [0, 0, 1, 0, 0, size]
-
 
 ### No display output above here.
 def get_available_columns():
@@ -75,11 +69,14 @@ def display_file_integrity(lock_filename_pair):
 	from sys import stdout
 	lock, filename = lock_filename_pair
 	padding = ' '*(get_available_columns() - len(filename))
+
 	stats = check_file_integrity(lock_filename_pair)
+	assert sorted([stats[_] for _ in [NUM_UNCHECKED, NUM_CORRECT, NUM_INCORRECT]]) \
+	       in [[0, 0, 0], [0, 0, 1]]
+	assert sorted([stats[_] for _
+	               in [BYTES_UNCHECKED, BYTES_CORRECT, BYTES_INCORRECT]])[:2] == [0, 0]
 
 	lock.acquire()
-	assert stats[NUM_CORRECT] == 0 or stats[NUM_INCORRECT] == 0
-	assert stats[BYTES_CORRECT] == 0 or stats[BYTES_INCORRECT] == 0
 	if stats[NUM_CORRECT] == 1:
 		stdout.write('\r%s: ok  %s'%(elide_path(filename), padding))
 	elif stats[NUM_INCORRECT] == 1:
@@ -87,9 +84,10 @@ def display_file_integrity(lock_filename_pair):
 		stdout.write('\r%s: fail%s\n'%(filename, padding))
 	lock.release()
 
-	# multiprocessing pools only function with top-level functions because those can be pickled
+	# multiprocessing pools only functions with top-level functions because those can be pickled
 	return stats
 
+### Remaining functions run in parent multiprocessing process.
 def search_dir(root):
 	from itertools import chain
 	from os import walk
@@ -101,11 +99,9 @@ def check_files(root, check_fn):
 	from functools import reduce
 	from itertools import repeat
 	from multiprocessing import Manager, Pool, cpu_count
-	filenames = list(search_dir(root))
-	from random import shuffle; shuffle(filenames)
 
 	with Manager() as m:
-		stats = Pool(processes=cpu_count()).map(check_fn, zip(repeat(m.Lock()), filenames))
+		stats = Pool(processes=cpu_count()).map(check_fn, zip(repeat(m.Lock()), search_dir(root)))
 
 	total = reduce(lambda a,b:[x+y for x, y in zip(a, b)], stats, [0, 0, 0, 0, 0 ,0])
 	return  total[NUM_CORRECT]+total[NUM_INCORRECT]+total[NUM_UNCHECKED], \
