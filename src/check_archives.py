@@ -12,7 +12,7 @@ def get_file_handlers():
          '.jar', '.apk', '.cbz', '.epub', '.xpi'],
          lambda filename:(ZipFile(filename).testzip() == None)),
         (['.xz', '.txz'],
-         lambda filename:(lambda fh:next(filter(lambda _:fh.read(2**24)==b'', repeat(True))))
+         lambda filename:(lambda fh:next(filter(lambda _:fh.read(2**24) == b'', repeat(True))))
                          (LZMAFile(filename, 'rb'))),
         (['.png', '.jpg', '.gif', '.tiff', '.tif'],
          lambda filename:bool(Image.open(filename).load()))
@@ -67,7 +67,7 @@ def elide_path(path):
     delim, max_len = '~', get_available_columns()
     half_len = (max_len - len(delim))//2
     if len(path) > max_len:
-        return '%s%s%s'%(path[:half_len], delim, path[-half_len:])
+        return '%s%s%s' % (path[:half_len], delim, path[-half_len:])
     else:
         return path
 
@@ -85,10 +85,10 @@ def display_file_integrity(lock_filename_pair):
 
     lock.acquire()
     if stats[NUM_CORRECT] == 1:
-        stdout.write('\r%s: ok  %s'%(elide_path(filename), padding))
+        stdout.write('\r%s: ok  %s' % (elide_path(filename), padding))
     elif stats[NUM_INCORRECT] == 1:
         # Need to pad to wipe out rest of previous 'ok' lines
-        stdout.write('\r%s: fail%s\n'%(filename, padding))
+        stdout.write('\r%s: fail%s\n' % (filename, padding))
     lock.release()
 
     # multiprocessing pools only functions with top-level functions because those can be pickled
@@ -112,8 +112,9 @@ def check_files(root, check_fn):
     with Manager() as m:
         stats = Pool(processes=cpu_count()).map(check_fn, zip(repeat(m.Lock()), search_dir(root)))
 
-    total = reduce(lambda a,b:[x+y for x, y in zip(a, b)], stats, [0, 0, 0, 0, 0 ,0])
-    return  total[NUM_CORRECT]+total[NUM_INCORRECT]+total[NUM_UNCHECKED], \
+    total = reduce(lambda a, b: [x+y for x, y in zip(a, b)], stats, [0, 0, 0, 0, 0, 0])
+    return \
+        total[NUM_CORRECT]+total[NUM_INCORRECT]+total[NUM_UNCHECKED], \
         total[NUM_CORRECT]+total[NUM_INCORRECT], total[NUM_CORRECT], \
         total[BYTES_CORRECT]+total[BYTES_INCORRECT]+total[BYTES_UNCHECKED], \
         total[BYTES_CORRECT]+total[BYTES_INCORRECT], total[BYTES_CORRECT]
@@ -137,10 +138,10 @@ def main():
     if verbose:
         # TODO: this message lies (can get here even w/ failures)
         # avoid division by zero.
-        stdout.write('\r%s\n'%('all ok; tested %2.2f%% (%d of %d) of available files and %2.2f%% of available data'
-                       %(s*100.0/(t+1), s, t, s_bytes*100.0/(t_bytes+1)) if s==c else
-                       'failed%s'%(' '*(get_available_columns()-6))))
-    return not (s==c)
+        stdout.write('\r%s\n' % ('all ok; tested %2.2f%% (%d of %d) of available files and %2.2f%% of available data'
+                       % (s*100.0/(t+1), s, t, s_bytes*100.0/(t_bytes+1)) if s == c else
+                       'failed%s' % (' '*(get_available_columns()-6))))
+    return not (s == c)
 
 if __name__ == '__main__':
     # For multiprocessing on Win32
