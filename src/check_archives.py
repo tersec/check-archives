@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+
 def get_file_handlers():
     from itertools import chain, repeat
     from lzma import LZMAFile
@@ -18,6 +19,8 @@ def get_file_handlers():
     ])))
 
 file_handlers = get_file_handlers()
+
+
 def get_file_handler(filename):
     from os.path import splitext
     return file_handlers.get(splitext(filename)[1].lower(), None)
@@ -26,6 +29,7 @@ def get_file_handler(filename):
 ### subprocesses.
 NUM_UNCHECKED, NUM_CORRECT, NUM_INCORRECT, BYTES_UNCHECKED, \
 BYTES_CORRECT, BYTES_INCORRECT = range(6)
+
 
 def check_file_integrity(lock_filename_pair):
     from os import stat
@@ -51,10 +55,12 @@ def check_file_integrity(lock_filename_pair):
         # Otherwise, assume data error (see else branch above)
         return [0, 0, 1, 0, 0, size]
 
+
 ### No display output above here.
 def get_available_columns():
     from shutil import get_terminal_size
     return get_terminal_size(fallback=(72, 24)).columns-len(': fail ')
+
 
 def elide_path(path):
     # Preserve useful beginning and end of path
@@ -64,6 +70,7 @@ def elide_path(path):
         return '%s%s%s'%(path[:half_len], delim, path[-half_len:])
     else:
         return path
+
 
 def display_file_integrity(lock_filename_pair):
     from sys import stdout
@@ -87,6 +94,7 @@ def display_file_integrity(lock_filename_pair):
     # multiprocessing pools only functions with top-level functions because those can be pickled
     return stats
 
+
 ### Remaining functions run in parent multiprocessing process.
 def search_dir(root):
     from itertools import chain
@@ -94,6 +102,7 @@ def search_dir(root):
     from os.path import join
     return chain(*[list(map(lambda filename:join(dir_, filename), files))
                    for dir_, _, files in walk(root)])
+
 
 def check_files(root, check_fn):
     from functools import reduce
@@ -109,6 +118,7 @@ def check_files(root, check_fn):
         total[BYTES_CORRECT]+total[BYTES_INCORRECT]+total[BYTES_UNCHECKED], \
         total[BYTES_CORRECT]+total[BYTES_INCORRECT], total[BYTES_CORRECT]
 
+
 def cmdline_parser():
     from optparse import OptionParser
     parser = OptionParser(usage='usage %prog [options] [scan_directory]', version="%prog 0.5")
@@ -117,6 +127,7 @@ def cmdline_parser():
 
     (options, args) = parser.parse_args()
     return options.verbose, args
+
 
 def main():
     from sys import stdout
