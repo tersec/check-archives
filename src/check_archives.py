@@ -25,8 +25,8 @@ def get_file_handler(filename):
     from os.path import splitext
     return file_handlers.get(splitext(filename)[1].lower(), None)
 
-### Until otherwise noted, functions run in multiprocessing
-### subprocesses.
+# Until otherwise noted, functions run in multiprocessing
+# subprocesses.
 NUM_UNCHECKED, NUM_CORRECT, NUM_INCORRECT, BYTES_UNCHECKED, \
 BYTES_CORRECT, BYTES_INCORRECT = range(6)
 
@@ -56,7 +56,7 @@ def check_file_integrity(lock_filename_pair):
         return [0, 0, 1, 0, 0, size]
 
 
-### No display output above here.
+# No display output above here.
 def get_available_columns():
     from shutil import get_terminal_size
     return get_terminal_size(fallback=(72, 24)).columns-len(': fail ')
@@ -95,7 +95,7 @@ def display_file_integrity(lock_filename_pair):
     return stats
 
 
-### Remaining functions run in parent multiprocessing process.
+# Remaining functions run in parent multiprocessing process.
 def search_dir(root):
     from itertools import chain
     from os import walk
