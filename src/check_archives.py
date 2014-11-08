@@ -5,6 +5,7 @@ def get_file_handlers():
     from itertools import chain, repeat
     from lzma import LZMAFile
     from PIL import Image
+    from py7zlib import Archive7z
     from zipfile import ZipFile
 
     return dict(chain(*(zip(exts, repeat(fn)) for exts, fn in [
@@ -16,7 +17,9 @@ def get_file_handlers():
                                                 repeat(True))))
                          (LZMAFile(filename, 'rb'))),
         (['.png', '.jpg', '.gif', '.tiff', '.tif'],
-         lambda filename:bool(Image.open(filename).load()))
+         lambda filename:bool(Image.open(filename).load())),
+        (['.7z'],
+         lambda filename:Archive7z(filename).test7z())
     ])))
 
 file_handlers = get_file_handlers()
